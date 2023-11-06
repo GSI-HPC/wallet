@@ -1,0 +1,687 @@
+From: Matthias Pausch <m.pausch@gsi.de>
+Date: Mon, 6 Nov 2023 14:49:44 +0100
+Subject: Remove support for WAKeyring
+
+---
+ Makefile.am                         |   1 -
+ perl/MANIFEST                       |   1 -
+ perl/lib/Wallet/Admin.pm            |   3 +-
+ perl/lib/Wallet/Config.pm           |  61 ------
+ perl/lib/Wallet/Object/WAKeyring.pm | 367 ------------------------------------
+ perl/t/object/wa-keyring.t          | 183 ------------------
+ 6 files changed, 1 insertion(+), 615 deletions(-)
+ delete mode 100644 perl/lib/Wallet/Object/WAKeyring.pm
+ delete mode 100755 perl/t/object/wa-keyring.t
+
+diff --git a/Makefile.am b/Makefile.am
+index ba7b1be..1489d93 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -33,7 +33,6 @@ PERL_FILES = perl/Build.PL perl/MANIFEST perl/MANIFEST.SKIP perl/create-ddl \
+ 	perl/lib/Wallet/Object/Base.pm perl/lib/Wallet/Object/Duo.pm	    \
+ 	perl/lib/Wallet/Object/File.pm perl/lib/Wallet/Object/Keytab.pm	    \
+ 	perl/lib/Wallet/Object/Password.pm				    \
+-	perl/lib/Wallet/Object/WAKeyring.pm				    \
+ 	perl/lib/Wallet/Policy/Stanford.pm perl/lib/Wallet/Report.pm	    \
+ 	perl/lib/Wallet/Schema.pm perl/lib/Wallet/Server.pm		    \
+ 	perl/lib/Wallet/Schema/Result/Acl.pm				    \
+diff --git a/perl/MANIFEST b/perl/MANIFEST
+index 77aef98..e8432ca 100644
+--- a/perl/MANIFEST
++++ b/perl/MANIFEST
+@@ -17,7 +17,6 @@ lib/Wallet/Object/Base.pm
+ lib/Wallet/Object/Duo.pm
+ lib/Wallet/Object/File.pm
+ lib/Wallet/Object/Keytab.pm
+-lib/Wallet/Object/WAKeyring.pm
+ lib/Wallet/Policy/Stanford.pm
+ lib/Wallet/Report.pm
+ lib/Wallet/Schema.pm
+diff --git a/perl/lib/Wallet/Admin.pm b/perl/lib/Wallet/Admin.pm
+index 707f410..b404b72 100644
+--- a/perl/lib/Wallet/Admin.pm
++++ b/perl/lib/Wallet/Admin.pm
+@@ -131,8 +131,7 @@ sub default_data {
+                [ 'duo-rdp',    'Wallet::Object::Duo' ],
+                [ 'file',       'Wallet::Object::File' ],
+                [ 'password',   'Wallet::Object::Password' ],
+-               [ 'keytab',     'Wallet::Object::Keytab' ],
+-               [ 'wa-keyring', 'Wallet::Object::WAKeyring' ]);
++               [ 'keytab',     'Wallet::Object::Keytab' ]);
+     ($r1) = $self->{schema}->resultset('Type')->populate (\@record);
+     warn "default Type not installed" unless defined $r1;
+ 
+diff --git a/perl/lib/Wallet/Config.pm b/perl/lib/Wallet/Config.pm
+index 60f0e10..d2ee300 100644
+--- a/perl/lib/Wallet/Config.pm
++++ b/perl/lib/Wallet/Config.pm
+@@ -615,67 +615,6 @@ our $AD_KEYTAB_BUCKET = '/var/lib/wallet/keytabs';
+ 
+ =back
+ 
+-=head1 WEBAUTH KEYRING OBJECT CONFIGURATION
+-
+-These configuration variables only need to be set if you intend to use the
+-C<wakeyring> object type (the Wallet::Object::WAKeyring class).
+-
+-=over 4
+-
+-=item WAKEYRING_BUCKET
+-
+-The directory into which to store WebAuth keyring objects.  WebAuth
+-keyring objects will be stored in subdirectories of this directory.  See
+-L<Wallet::Object::WAKeyring> for the full details of the naming scheme.
+-This directory must be writable by the wallet server and the wallet server
+-must be able to create subdirectories of it.
+-
+-WAKEYRING_BUCKET must be set to use WebAuth keyring objects.
+-
+-=cut
+-
+-our $WAKEYRING_BUCKET;
+-
+-=item WAKEYRING_REKEY_INTERVAL
+-
+-The interval, in seconds, at which new keys are generated in a keyring.
+-The object implementation will try to arrange for there to be keys added
+-to the keyring separated by this interval.
+-
+-It's useful to provide some interval to install the keyring everywhere
+-that it's used before the key becomes inactive.  Every keyring will
+-therefore normally have at least three keys: one that's currently active,
+-one that becomes valid in the future but less than
+-WAKEYRING_REKEY_INTERVAL from now, and one that becomes valid between one
+-and two of those intervals into the future.  This means that one has twice
+-this interval to distribute the keyring everywhere it is used.
+-
+-Internally, this is implemented by adding a new key that becomes valid in
+-twice this interval from the current time if the newest key becomes valid
+-at or less than this interval in the future.
+-
+-The default value is 60 * 60 * 24 (one day).
+-
+-=cut
+-
+-our $WAKEYRING_REKEY_INTERVAL = 60 * 60 * 24;
+-
+-=item WAKEYRING_PURGE_INTERVAL
+-
+-The interval, in seconds, from the key creation date after which keys are
+-removed from the keyring.  This is used to clean up old keys and finish
+-key rotation.  Keys won't be removed unless there are more than three keys
+-in the keyring to try to keep a misconfiguration from removing all valid
+-keys.
+-
+-The default value is 60 * 60 * 24 * 90 (90 days).
+-
+-=cut
+-
+-our $WAKEYRING_PURGE_INTERVAL = 60 * 60 * 24 * 90;
+-
+-=back
+-
+ =head1 EXTERNAL ACL CONFIGURATION
+ 
+ This configuration variable is only needed if you intend to use the
+diff --git a/perl/lib/Wallet/Object/WAKeyring.pm b/perl/lib/Wallet/Object/WAKeyring.pm
+deleted file mode 100644
+index a64b376..0000000
+--- a/perl/lib/Wallet/Object/WAKeyring.pm
++++ /dev/null
+@@ -1,367 +0,0 @@
+-# Wallet::Object::WAKeyring -- WebAuth keyring object implementation
+-#
+-# Written by Russ Allbery <eagle@eyrie.org>
+-# Copyright 2016 Russ Allbery <eagle@eyrie.org>
+-# Copyright 2012-2014
+-#     The Board of Trustees of the Leland Stanford Junior University
+-#
+-# SPDX-License-Identifier: MIT
+-
+-##############################################################################
+-# Modules and declarations
+-##############################################################################
+-
+-package Wallet::Object::WAKeyring;
+-
+-use 5.008;
+-use strict;
+-use warnings;
+-
+-use Digest::MD5 qw(md5_hex);
+-use Fcntl qw(LOCK_EX);
+-use Wallet::Config;
+-use Wallet::Object::Base;
+-use WebAuth 3.06 qw(WA_KEY_AES WA_AES_128);
+-
+-our @ISA     = qw(Wallet::Object::Base);
+-our $VERSION = '1.04';
+-
+-##############################################################################
+-# File naming
+-##############################################################################
+-
+-# Returns the path into which that keyring object will be stored or undef on
+-# error.  On error, sets the internal error.
+-sub file_path {
+-    my ($self) = @_;
+-    my $name = $self->{name};
+-    unless ($Wallet::Config::WAKEYRING_BUCKET) {
+-        $self->error ('WebAuth keyring support not configured');
+-        return;
+-    }
+-    unless ($name) {
+-        $self->error ('WebAuth keyring objects may not have empty names');
+-        return;
+-    }
+-    my $hash = substr (md5_hex ($name), 0, 2);
+-    $name =~ s/([^\w-])/sprintf ('%%%02X', ord ($1))/ge;
+-    my $parent = "$Wallet::Config::WAKEYRING_BUCKET/$hash";
+-    unless (-d $parent || mkdir ($parent, 0700)) {
+-        $self->error ("cannot create keyring bucket $hash: $!");
+-        return;
+-    }
+-    return "$Wallet::Config::WAKEYRING_BUCKET/$hash/$name";
+-}
+-
+-##############################################################################
+-# Core methods
+-##############################################################################
+-
+-# Override destroy to delete the file as well.
+-sub destroy {
+-    my ($self, $user, $host, $time) = @_;
+-    my $id = $self->{type} . ':' . $self->{name};
+-    my $path = $self->file_path;
+-    if (defined ($path) && -f $path && !unlink ($path)) {
+-        $self->error ("cannot delete $id: $!");
+-        return;
+-    }
+-    return $self->SUPER::destroy ($user, $host, $time);
+-}
+-
+-# Update the keyring if needed, and then return the contents of the current
+-# keyring.
+-sub get {
+-    my ($self, $user, $host, $time) = @_;
+-    $time ||= time;
+-    my $id = $self->{type} . ':' . $self->{name};
+-    if ($self->flag_check ('locked')) {
+-        $self->error ("cannot get $id: object is locked");
+-        return;
+-    }
+-    my $path = $self->file_path;
+-    return unless defined $path;
+-
+-    # Create a WebAuth context and ensure we can load the relevant modules.
+-    my $wa = eval { WebAuth->new };
+-    if ($@) {
+-        $self->error ("cannot initialize WebAuth: $@");
+-        return;
+-    }
+-
+-    # Check if the keyring already exists.  If not, create a new one with a
+-    # single key that's immediately valid and two more that will become valid
+-    # in the future.
+-    #
+-    # If the keyring does already exist, get a lock on the file.  At the end
+-    # of this process, we'll do an atomic update and then drop our lock.
+-    #
+-    # FIXME: There are probably better ways to do this.  There are some race
+-    # conditions here, particularly with new keyrings.
+-    unless (open (FILE, '+<', $path)) {
+-        my $data;
+-        eval {
+-            my $key = $wa->key_create (WA_KEY_AES, WA_AES_128);
+-            my $ring = $wa->keyring_new ($key);
+-            $key = $wa->key_create (WA_KEY_AES, WA_AES_128);
+-            my $valid = time + $Wallet::Config::WAKEYRING_REKEY_INTERVAL;
+-            $ring->add (time, $valid, $key);
+-            $key = $wa->key_create (WA_KEY_AES, WA_AES_128);
+-            $valid += $Wallet::Config::WAKEYRING_REKEY_INTERVAL;
+-            $ring->add (time, $valid, $key);
+-            $data = $ring->encode;
+-            $ring->write ($path);
+-        };
+-        if ($@) {
+-            $self->error ("cannot create new keyring");
+-            return;
+-        };
+-        $self->log_action ('get', $user, $host, $time);
+-        return $data;
+-    }
+-    unless (flock (FILE, LOCK_EX)) {
+-        $self->error ("cannot get lock on keyring: $!");
+-        return;
+-    }
+-
+-    # Read the keyring.
+-    my $ring = eval { WebAuth::Keyring->read ($wa, $path) };
+-    if ($@) {
+-        $self->error ("cannot read keyring: $@");
+-        return;
+-    }
+-
+-    # If the most recent key has a valid-after older than now +
+-    # WAKEYRING_REKEY_INTERVAL, we generate a new key with a valid_after of
+-    # now + 2 * WAKEYRING_REKEY_INTERVAL.
+-    my ($count, $newest) = (0, 0);
+-    for my $entry ($ring->entries) {
+-        $count++;
+-        if ($entry->valid_after > $newest) {
+-            $newest = $entry->valid_after;
+-        }
+-    }
+-    eval {
+-        if ($newest <= time + $Wallet::Config::WAKEYRING_REKEY_INTERVAL) {
+-            my $valid = time + 2 * $Wallet::Config::WAKEYRING_REKEY_INTERVAL;
+-            my $key = $wa->key_create (WA_KEY_AES, WA_AES_128);
+-            $ring->add (time, $valid, $key);
+-        }
+-    };
+-    if ($@) {
+-        $self->error ("cannot add new key: $@");
+-        return;
+-    }
+-
+-    # If there are any keys older than the purge interval, remove them, but
+-    # only do so if we have more than three keys (the one that's currently
+-    # active, the one that's going to come active in the rekey interval, and
+-    # the one that's going to come active after that.
+-    #
+-    # FIXME: Be sure that we don't remove the last currently-valid key.
+-    my $cutoff = time - $Wallet::Config::WAKEYRING_PURGE_INTERVAL;
+-    my $i = 0;
+-    my @purge;
+-    if ($count > 3) {
+-        for my $entry ($ring->entries) {
+-            if ($entry->creation < $cutoff) {
+-                push (@purge, $i);
+-            }
+-            $i++;
+-        }
+-    }
+-    if (@purge && $count - @purge >= 3) {
+-        eval {
+-            for my $key (reverse @purge) {
+-                $ring->remove ($key);
+-            }
+-        };
+-        if ($@) {
+-            $self->error ("cannot remove old keys: $@");
+-            return;
+-        }
+-    }
+-
+-    # Encode the key.
+-    my $data = eval { $ring->encode };
+-    if ($@) {
+-        $self->error ("cannot encode keyring: $@");
+-        return;
+-    }
+-
+-    # Write the new keyring to the path.
+-    eval { $ring->write ($path) };
+-    if ($@) {
+-        $self->error ("cannot store new keyring: $@");
+-        return;
+-    }
+-    close FILE;
+-    $self->log_action ('get', $user, $host, $time);
+-    return $data;
+-}
+-
+-# Store the file on the wallet server.
+-#
+-# FIXME: Check the provided keyring for validity.
+-sub store {
+-    my ($self, $data, $user, $host, $time) = @_;
+-    $time ||= time;
+-    my $id = $self->{type} . ':' . $self->{name};
+-    if ($self->flag_check ('locked')) {
+-        $self->error ("cannot store $id: object is locked");
+-        return;
+-    }
+-    if ($Wallet::Config::FILE_MAX_SIZE) {
+-        my $max = $Wallet::Config::FILE_MAX_SIZE;
+-        if (length ($data) > $max) {
+-            $self->error ("data exceeds maximum of $max bytes");
+-            return;
+-        }
+-    }
+-    my $path = $self->file_path;
+-    return unless $path;
+-    unless (open (FILE, '>', $path)) {
+-        $self->error ("cannot store $id: $!");
+-        return;
+-    }
+-    unless (print FILE ($data) and close FILE) {
+-        $self->error ("cannot store $id: $!");
+-        close FILE;
+-        return;
+-    }
+-    $self->log_action ('store', $user, $host, $time);
+-    return 1;
+-}
+-
+-1;
+-__END__
+-
+-##############################################################################
+-# Documentation
+-##############################################################################
+-
+-=for stopwords
+-WebAuth keyring keyrings API HOSTNAME DATETIME keytab AES rekey Allbery
+-
+-=head1 NAME
+-
+-Wallet::Object::WAKeyring - WebAuth keyring object implementation for wallet
+-
+-=head1 SYNOPSIS
+-
+-    my ($user, $host, $time);
+-    my @name = qw(wa-keyring www.stanford.edu);
+-    my @trace = ($user, $host, $time);
+-    my $object = Wallet::Object::WAKeyring->create (@name, $schema, $trace);
+-    my $keyring = $object->get (@trace);
+-    unless ($object->store ($keyring)) {
+-        die $object->error, "\n";
+-    }
+-    $object->destroy (@trace);
+-
+-=head1 DESCRIPTION
+-
+-Wallet::Object::WAKeyring is a representation of a WebAuth keyring in the
+-wallet.  It implements the wallet object API and provides the necessary
+-glue to store a keyring on the wallet server, retrieve it, update the
+-keyring with new keys automatically as needed, purge old keys
+-automatically, and delete the keyring when the object is deleted.
+-
+-WebAuth keyrings hold one or more keys.  Each key has a creation time and
+-a validity time.  The key cannot be used until its validity time has been
+-reached.  This permits safe key rotation: a new key is added with a
+-validity time in the future, and then the keyring is updated everywhere it
+-needs to be before that validity time is reached.  This wallet object
+-automatically handles key rotation by adding keys with validity dates in
+-the future and removing keys with creation dates substantially in the
+-past.
+-
+-To use this object, various configuration options specifying where to
+-store the keyrings and how to handle key rotation must be set.  See
+-Wallet::Config for details on these configuration parameters and
+-information about how to set wallet configuration.
+-
+-=head1 METHODS
+-
+-This object mostly inherits from Wallet::Object::Base.  See the
+-documentation for that class for all generic methods.  Below are only
+-those methods that are overridden or behave specially for this
+-implementation.
+-
+-=over 4
+-
+-=item destroy(PRINCIPAL, HOSTNAME [, DATETIME])
+-
+-Destroys a WebAuth keyring object by removing it from the database and
+-deleting the corresponding file on the wallet server.  Returns true on
+-success and false on failure.  The caller should call error() to get the
+-error message after a failure.  PRINCIPAL, HOSTNAME, and DATETIME are
+-stored as history information.  PRINCIPAL should be the user who is
+-destroying the object.  If DATETIME isn't given, the current time is used.
+-
+-=item get(PRINCIPAL, HOSTNAME [, DATETIME])
+-
+-Either creates a new WebAuth keyring (if this object has not bee stored or
+-retrieved before) or does any necessary periodic maintenance on the
+-keyring and then returns its data.  The caller should call error() to get
+-the error message if get() returns undef.  PRINCIPAL, HOSTNAME, and
+-DATETIME are stored as history information.  PRINCIPAL should be the user
+-who is downloading the keytab.  If DATETIME isn't given, the current time
+-is used.
+-
+-If this object has never been stored or retrieved before, a new keyring
+-will be created with three 128-bit AES keys: one that is immediately
+-valid, one that will become valid after the rekey interval, and one that
+-will become valid after twice the rekey interval.
+-
+-If keyring data for this object already exists, the creation and validity
+-dates for each key in the keyring will be examined.  If the key with the
+-validity date the farthest into the future has a date that's less than or
+-equal to the current time plus the rekey interval, a new 128-bit AES key
+-will be added to the keyring with a validity time of twice the rekey
+-interval in the future.  Finally, all keys with a creation date older than
+-the configured purge interval will be removed provided that the keyring
+-has at least three keys
+-
+-=item store(DATA, PRINCIPAL, HOSTNAME [, DATETIME])
+-
+-Store DATA as the current contents of the WebAuth keyring object.  Note
+-that this is not checked for validity, just assumed to be a valid keyring.
+-Any existing data will be overwritten.  Returns true on success and false
+-on failure.  The caller should call error() to get the error message after
+-a failure.  PRINCIPAL, HOSTNAME, and DATETIME are stored as history
+-information.  PRINCIPAL should be the user who is destroying the object.
+-If DATETIME isn't given, the current time is used.
+-
+-If FILE_MAX_SIZE is set in the wallet configuration, a store() of DATA
+-larger than that configuration setting will be rejected.
+-
+-=back
+-
+-=head1 FILES
+-
+-=over 4
+-
+-=item WAKEYRING_BUCKET/<hash>/<file>
+-
+-WebAuth keyrings are stored on the wallet server under the directory
+-WAKEYRING_BUCKET as set in the wallet configuration.  <hash> is the first
+-two characters of the hex-encoded MD5 hash of the wallet file object name,
+-used to not put too many files in the same directory.  <file> is the name
+-of the file object with all characters other than alphanumerics,
+-underscores, and dashes replaced by "%" and the hex code of the character.
+-
+-=back
+-
+-=head1 SEE ALSO
+-
+-Wallet::Config(3), Wallet::Object::Base(3), wallet-backend(8), WebAuth(3)
+-
+-This module is part of the wallet system. The current version is available
+-from L<https://www.eyrie.org/~eagle/software/wallet/>.
+-
+-=head1 AUTHOR
+-
+-Russ Allbery <eagle@eyrie.org>
+-
+-=cut
+diff --git a/perl/t/object/wa-keyring.t b/perl/t/object/wa-keyring.t
+deleted file mode 100755
+index aa38e9c..0000000
+--- a/perl/t/object/wa-keyring.t
++++ /dev/null
+@@ -1,183 +0,0 @@
+-#!/usr/bin/perl
+-#
+-# Tests for the WebAuth keyring object implementation.
+-#
+-# Written by Russ Allbery <eagle@eyrie.org>
+-# Copyright 2013-2014
+-#     The Board of Trustees of the Leland Stanford Junior University
+-#
+-# SPDX-License-Identifier: MIT
+-
+-use strict;
+-use warnings;
+-
+-use Test::More;
+-
+-BEGIN {
+-    eval 'use WebAuth 3.06 qw(WA_KEY_AES WA_AES_128)';
+-    plan skip_all => 'WebAuth 3.06 required for testing wa-keyring'
+-      if $@;
+-}
+-
+-use WebAuth::Key 1.01 ();
+-use WebAuth::Keyring 1.02 ();
+-
+-BEGIN {
+-    plan tests => 68;
+-    use_ok('Wallet::Admin');
+-    use_ok('Wallet::Config');
+-    use_ok('Wallet::Object::WAKeyring');
+-}
+-
+-use lib 't/lib';
+-use Util;
+-
+-# Some global defaults to use.
+-my $user = 'admin@EXAMPLE.COM';
+-my $host = 'localhost';
+-my @trace = ($user, $host, time);
+-
+-# Flush all output immediately.
+-$| = 1;
+-
+-# Use Wallet::Admin to set up the database.
+-system ('rm -rf test-keyrings') == 0 or die "cannot remove test-keyrings\n";
+-db_setup;
+-my $admin = eval { Wallet::Admin->new };
+-is ($@, '', 'Database connection succeeded');
+-is ($admin->reinitialize ($user), 1, 'Database initialization succeeded');
+-my $schema = $admin->schema;
+-
+-# Create a WebAuth context to use.
+-my $wa = WebAuth->new;
+-
+-# Test error handling in the absence of configuration.
+-my $object = eval {
+-    Wallet::Object::WAKeyring->create ('wa-keyring', 'test', $schema, @trace)
+-  };
+-ok (defined ($object), 'Creating a basic WebAuth keyring object succeeds');
+-ok ($object->isa ('Wallet::Object::WAKeyring'), ' and is the right class');
+-is ($object->get (@trace), undef, ' and get fails');
+-is ($object->error, 'WebAuth keyring support not configured',
+-    ' with the right error');
+-is ($object->store (@trace), undef, ' and store fails');
+-is ($object->error, 'WebAuth keyring support not configured',
+-    ' with the right error');
+-is ($object->destroy (@trace), 1, ' but destroy succeeds');
+-
+-# Set up our configuration.
+-mkdir 'test-keyrings' or die "cannot create test-keyrings: $!\n";
+-$Wallet::Config::WAKEYRING_BUCKET = 'test-keyrings';
+-
+-# Okay, now we can test.  First, the basic object without store.
+-$object = eval {
+-    Wallet::Object::WAKeyring->create ('wa-keyring', 'test', $schema, @trace)
+-  };
+-ok (defined ($object), 'Creating a basic WebAuth keyring object succeeds');
+-ok ($object->isa ('Wallet::Object::WAKeyring'), ' and is the right class');
+-my $data = $object->get (@trace);
+-ok ($data, ' and get succeeds');
+-my $keyring = WebAuth::Keyring->decode ($wa, $data);
+-ok ($keyring->isa ('WebAuth::Keyring'), ' and resulting keyring decodes');
+-my @entries = $keyring->entries;
+-is (scalar (@entries), 3, ' and has three entries');
+-is ($entries[0]->creation, 0, 'First has good creation');
+-is ($entries[0]->key->type, WA_KEY_AES, ' and key type');
+-is ($entries[0]->key->length, WA_AES_128, ' and key length');
+-is ($entries[0]->valid_after, 0, ' and validity');
+-ok ((time - $entries[1]->creation) < 2, 'Second has good creation');
+-is ($entries[1]->key->type, WA_KEY_AES, ' and key type');
+-is ($entries[1]->key->length, WA_AES_128, ' and key length');
+-ok (($entries[1]->valid_after - time) <= 60 * 60 * 24,
+-    ' and validity (upper)');
+-ok (($entries[1]->valid_after - time) > 60 * 60 * 24 - 2,
+-    ' and validity (lower)');
+-ok ((time - $entries[2]->creation) < 2, 'Third has good creation');
+-is ($entries[2]->key->type, WA_KEY_AES, ' and key type');
+-is ($entries[2]->key->length, WA_AES_128, ' and key length');
+-ok (($entries[2]->valid_after - time) <= 2 * 60 * 60 * 24,
+-    ' and validity (upper)');
+-ok (($entries[2]->valid_after - time) > 2 * 60 * 60 * 24 - 2,
+-    ' and validity (lower)');
+-my $data2 = $object->get (@trace);
+-is ($data2, $data, 'Getting the object again returns the same data');
+-is ($object->error, undef, ' with no error');
+-is ($object->destroy (@trace), 1, 'Destroying the object succeeds');
+-
+-# Now store something and be sure that we get something reasonable.
+-$object = eval {
+-    Wallet::Object::WAKeyring->create ('wa-keyring', 'test', $schema, @trace)
+-  };
+-ok (defined ($object), 'Recreating the object succeeds');
+-my $key = WebAuth::Key->new ($wa, WA_KEY_AES, WA_AES_128);
+-$keyring = WebAuth::Keyring->new ($wa, $key);
+-$data = $keyring->encode;
+-is ($object->store ($data, @trace), 1, ' and storing data in it succeeds');
+-ok (-d 'test-keyrings/09', ' and the hash bucket was created');
+-ok (-f 'test-keyrings/09/test', ' and the file exists');
+-is (contents ('test-keyrings/09/test'), $data, ' with the right contents');
+-$data = $object->get (@trace);
+-$keyring = WebAuth::Keyring->decode ($wa, $data);
+-ok ($keyring->isa ('WebAuth::Keyring'), ' and get returns a valid keyring');
+-@entries = $keyring->entries;
+-is (scalar (@entries), 2, ' and has three entries');
+-is ($entries[0]->creation, 0, 'First has good creation');
+-is ($entries[0]->key->type, WA_KEY_AES, ' and key type');
+-is ($entries[0]->key->length, WA_AES_128, ' and key length');
+-is ($entries[0]->valid_after, 0, ' and validity');
+-is ($entries[0]->key->data, $key->data, ' and matches the original key');
+-ok ((time - $entries[1]->creation) < 2, 'Second has good creation');
+-is ($entries[1]->key->type, WA_KEY_AES, ' and key type');
+-is ($entries[1]->key->length, WA_AES_128, ' and key length');
+-ok (($entries[1]->valid_after - time) <= 2 * 60 * 60 * 24,
+-    ' and validity (upper)');
+-ok (($entries[1]->valid_after - time) > 2 * 60 * 60 * 24 - 2,
+-    ' and validity (lower)');
+-
+-# Test pruning.  Add another old key and a couple of more current keys to the
+-# current keyring.
+-$key = WebAuth::Key->new ($wa, WA_KEY_AES, WA_AES_128);
+-$keyring->add (0, 0, $key);
+-$key = WebAuth::Key->new ($wa, WA_KEY_AES, WA_AES_128);
+-$keyring->add (time - 24 * 60 * 60, time - 24 * 60 * 60, $key);
+-$key = WebAuth::Key->new ($wa, WA_KEY_AES, WA_AES_128);
+-$keyring->add (time, time, $key);
+-$data = $keyring->encode;
+-is ($object->store ($data, @trace), 1, 'Storing modified keyring succeeds');
+-$data = $object->get (@trace);
+-$keyring = WebAuth::Keyring->decode ($wa, $data);
+-ok ($keyring->isa ('WebAuth::Keyring'), ' and get returns a valid keyring');
+-@entries = $keyring->entries;
+-is (scalar (@entries), 3, ' and has three entries');
+-ok ((time - $entries[0]->creation) < 2, 'First has good creation');
+-ok (($entries[0]->valid_after - time) <= 2 * 60 * 60 * 24,
+-    ' and validity (upper)');
+-ok (($entries[0]->valid_after - time) > 2 * 60 * 60 * 24 - 2,
+-    ' and validity (lower)');
+-ok ((time - $entries[1]->creation) < 24 * 60 * 60 + 2,
+-    'Second has good creation');
+-ok ((time - $entries[1]->valid_after) <= 60 * 60 * 24 + 2,
+-    ' and validity');
+-ok ((time - $entries[2]->creation) < 2, 'Third has good creation');
+-ok ((time - $entries[2]->valid_after) < 2, ' and validity');
+-is ($object->destroy (@trace), 1, 'Destroying the object succeeds');
+-
+-# Test error handling in the file store.
+-system ('rm -r test-keyrings') == 0 or die "cannot remove test-keyrings\n";
+-$object = eval {
+-    Wallet::Object::WAKeyring->create ('wa-keyring', 'test', $schema, @trace)
+-  };
+-ok (defined ($object), 'Recreating the object succeeds');
+-is ($object->get (@trace), undef, ' but retrieving it fails');
+-like ($object->error, qr/^cannot create keyring bucket 09: /,
+-      ' with the right error');
+-is ($object->store ("foo\n", @trace), undef, ' and store fails');
+-like ($object->error, qr/^cannot create keyring bucket 09: /,
+-      ' with the right error');
+-is ($object->destroy (@trace), 1, ' but destroying the object succeeds');
+-
+-# Clean up.
+-$admin->destroy;
+-END {
+-    unlink ('wallet-db');
+-}

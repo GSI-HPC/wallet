@@ -31,7 +31,7 @@ Build-Depends:
  perl,
  sqlite3,
 Rules-Requires-Root: no
-Standards-Version: 4.1.4
+Standards-Version: 4.6.2
 Homepage: https://www.eyrie.org/~eagle/software/wallet/
 Vcs-Git: https://git.eyrie.org/git/kerberos/wallet.git -b debian/master
 Vcs-Browser: https://git.eyrie.org/?p=kerberos/wallet.git

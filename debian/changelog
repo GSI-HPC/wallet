@@ -1,3 +1,18 @@
+wallet (1.4-2) unstable; urgency=medium
+
+  [ Matthias Pausch ]
+  * Remove support for WAKeyring.
+
+  [ Christopher Huhn ]
+  * Drop requirement on libwebauth-perl
+  * Also remove testing for wa-keyring
+  * Ignore some build artifacts in tests
+  * Pin the TZ environment variable to GMT to avoid clashes
+    between GMT and localtime in tests
+  * Bump Standards-Version
+
+ -- Christopher Huhn <C.Huhn@gsi.de>  Thu, 27 Jun 2024 19:22:47 +0200
+
 wallet (1.4-1) unstable; urgency=medium
 
   * New upstream release.

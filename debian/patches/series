@@ -1,1 +1,2 @@
 0001-Remove-support-for-WAKeyring.patch
+0002-Skip-backup-files-and-.pc-dir-in-tests.patch

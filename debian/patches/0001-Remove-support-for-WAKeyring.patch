@@ -8,8 +8,9 @@ Subject: Remove support for WAKeyring
  perl/lib/Wallet/Admin.pm            |   3 +-
  perl/lib/Wallet/Config.pm           |  61 ------
  perl/lib/Wallet/Object/WAKeyring.pm | 367 ------------------------------------
+ perl/t/general/report.t             |   5 +-
  perl/t/object/wa-keyring.t          | 183 ------------------
- 6 files changed, 1 insertion(+), 615 deletions(-)
+ 7 files changed, 3 insertions(+), 618 deletions(-)
  delete mode 100644 perl/lib/Wallet/Object/WAKeyring.pm
  delete mode 100755 perl/t/object/wa-keyring.t
 
@@ -496,6 +497,36 @@ index a64b376..0000000
 -Russ Allbery <eagle@eyrie.org>
 -
 -=cut
+diff --git a/perl/t/general/report.t b/perl/t/general/report.t
+index 8b491f5..3fdb104 100755
+--- a/perl/t/general/report.t
++++ b/perl/t/general/report.t
+@@ -11,7 +11,7 @@
+ use strict;
+ use warnings;
+ 
+-use Test::More tests => 223;
++use Test::More tests => 222;
+ 
+ use Wallet::Admin;
+ use Wallet::Report;
+@@ -43,7 +43,7 @@ is ($acls[0][1], 'ADMIN', ' with the right name');
+ 
+ # Check to see that we have all types that we expect.
+ my @types = $report->types;
+-is (scalar (@types), 10, 'There are ten types created');
++is (scalar (@types), 9, 'There are nine types created');
+ is ($types[0][0], 'base', ' and the first member is correct');
+ is ($types[1][0], 'duo', ' and the second member is correct');
+ is ($types[2][0], 'duo-ldap', ' and the third member is correct');
+@@ -53,7 +53,6 @@ is ($types[5][0], 'duo-rdp', ' and the sixth member is correct');
+ is ($types[6][0], 'file', ' and the seventh member is correct');
+ is ($types[7][0], 'keytab', ' and the eighth member is correct');
+ is ($types[8][0], 'password', ' and the nineth member is correct');
+-is ($types[9][0], 'wa-keyring', ' and the tenth member is correct');
+ 
+ # And that we have all schemes that we expect.
+ my @schemes = $report->acl_schemes;
 diff --git a/perl/t/object/wa-keyring.t b/perl/t/object/wa-keyring.t
 deleted file mode 100755
 index aa38e9c..0000000

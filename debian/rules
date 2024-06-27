@@ -13,6 +13,11 @@ export AUTOMATED_TESTING = 1
 # Tell C TAP Harness to report the verbose output from all tests.
 export C_TAP_VERBOSE = 1
 
+# wallet tests in pbuilder chrrots fail if $TZ is set to a real time zone
+# because the expires attribute in Wallet::Object::Base
+# implicitly assumes localtime
+export TZ = :Etc/GMT
+
 %:
 	dh $@
 
